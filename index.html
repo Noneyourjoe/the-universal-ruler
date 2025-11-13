@@ -32,6 +32,11 @@
       overflow: hidden;
     }
 
+    /* Allow scrolling when using image mode (fallback) */
+    body.fallback-mode {
+      overflow-y: auto;
+    }
+
     /* Fullscreen canvas for AR */
     #xr-canvas {
       position: fixed;
@@ -281,11 +286,12 @@
     /* Image upload panel (shown only in fallback) */
     .image-panel {
       margin-top: 6px;
-      padding: 6px 0 0;
+      padding: 6px 0 16px;
       display: flex;
       flex-direction: column;
       gap: 8px;
       align-items: center;
+      pointer-events: auto;
     }
 
     body:not(.fallback-mode) .image-panel {
@@ -303,9 +309,8 @@
     .image-container {
       position: relative;
       max-width: 100%;
-      max-height: 40vh;
       border-radius: 16px;
-      overflow: hidden;
+      overflow: visible; /* show full image, no cropping */
       border: 1px solid var(--border-soft);
       background: #020617;
     }
@@ -316,8 +321,9 @@
 
     .image-container img {
       display: block;
-      max-width: 100%;
-      height: auto;
+      width: 100%;   /* scale to screen width */
+      height: auto;  /* maintain aspect ratio */
+      touch-action: none;
     }
 
     /* WebXR AR button style (Three.js ARButton) */
@@ -884,13 +890,11 @@
       }
 
       function onImagePointerDown(event) {
-        // Ignore taps if no image
         if (!measureImageEl.src) {
           statusLabelEl.textContent = "Upload a photo first, then tap two points on it.";
           return;
         }
 
-        // Ignore taps on the modal
         if (!calibrationModalEl.classList.contains("hidden")) return;
 
         const rect = measureImageEl.getBoundingClientRect();
@@ -913,8 +917,7 @@
           const dy = p2.y - p1.y;
           const distPx = Math.sqrt(dx * dx + dy * dy);
 
-          // In image mode, raw unit = pixels. Calibration scale maps pixels → meters.
-          const rawDistance = distPx;
+          const rawDistance = distPx; // pixels
 
           if (isCalibrating) {
             rawCalibrationDistance = rawDistance;
