@@ -56,6 +56,13 @@
       mix-blend-mode: soft-light;
     }
 
+    /* In fallback (no camera), remove blend + gradient so it's readable */
+    body.fallback-mode .ui-overlay {
+      mix-blend-mode: normal;
+      background-image: none;
+      background: radial-gradient(circle at top, #0f172a, #020617 65%);
+    }
+
     .ui-top {
       display: flex;
       justify-content: space-between;
@@ -182,6 +189,7 @@
     .status-text {
       font-size: 0.74rem;
       color: var(--text-muted);
+      text-align: right;
     }
 
     .unit-select-group {
@@ -268,6 +276,48 @@
 
     .helper-text strong {
       color: #bae6fd;
+    }
+
+    /* Image upload panel (shown only in fallback) */
+    .image-panel {
+      margin-top: 6px;
+      padding: 6px 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+    }
+
+    body:not(.fallback-mode) .image-panel {
+      display: none;
+    }
+
+    .hidden-input {
+      display: none;
+    }
+
+    .image-upload-label {
+      cursor: pointer;
+    }
+
+    .image-container {
+      position: relative;
+      max-width: 100%;
+      max-height: 40vh;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid var(--border-soft);
+      background: #020617;
+    }
+
+    .image-container.hidden {
+      display: none;
+    }
+
+    .image-container img {
+      display: block;
+      max-width: 100%;
+      height: auto;
     }
 
     /* WebXR AR button style (Three.js ARButton) */
@@ -393,16 +443,16 @@
           <span class="brand-pill"></span>
           Universal AR Ruler
         </div>
-        <div class="brand-subtitle">
+        <div class="brand-subtitle" id="brand-subtitle">
           Tap once to drop <strong>Point A</strong>, again for <strong>Point B</strong>.
           Move your device to explore – distance updates in real-time.
         </div>
-        <span class="pill-badge">Single Calibration · Multi-Unit</span>
+        <span class="pill-badge" id="mode-badge">Single Calibration · Multi-Unit</span>
       </div>
 
       <div class="floating-chip">
         <span class="floating-dot"></span>
-        <span>Ready for surfaces · Move until the ring locks on</span>
+        <span id="chip-text">Ready for surfaces · Move until the ring locks on</span>
       </div>
     </div>
 
@@ -443,6 +493,20 @@
         Tip: For best accuracy, calibrate once using an object with a known length
         (e.g. <strong>A4 paper = 29.7 cm</strong> or a tape measure).
       </div>
+
+      <!-- Image upload mode (used when WebXR is not supported, e.g. iPhone Safari) -->
+      <div class="image-panel">
+        <label for="image-input" class="image-upload-label">
+          <span class="btn btn-primary">
+            <span class="icon">📷</span>
+            <span>Upload photo to measure</span>
+          </span>
+        </label>
+        <input id="image-input" type="file" accept="image/*" class="hidden-input" />
+        <div class="image-container hidden" id="image-container">
+          <img id="measure-image" alt="Uploaded for measurement" />
+        </div>
+      </div>
     </div>
   </div>
 
@@ -455,7 +519,7 @@
       </div>
       <div class="modal-body">
         <p>
-          You’ve just measured a calibration distance between two points in AR or on screen.
+          You’ve just measured a calibration distance between two points in AR or on the image.
         </p>
         <p>
           Enter the <strong>real-world distance</strong> between those two points. We’ll
@@ -481,7 +545,7 @@
     </div>
   </div>
 
-  <!-- Three.js + WebXR + iOS fallback -->
+  <!-- Three.js + WebXR + fallback image mode -->
   <script type="module">
     import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
     import { ARButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js";
@@ -496,8 +560,9 @@
     let lastDistanceMeters = 0;
 
     let isCalibrating = false;
-    let rawCalibrationDistanceMeters = 0;
-    let isFallbackMode = false; // true on iOS / no WebXR
+    let rawCalibrationDistance = 0; // "raw units" (meters in XR, pixels in fallback)
+    let calibrationScale = 1.0;     // meters per raw unit
+    let currentMode = "none";       // "xr" or "fallback"
 
     const distanceValueEl = document.getElementById("distance-value");
     const statusLabelEl = document.getElementById("status-label");
@@ -511,15 +576,13 @@
     const calibrationSaveEl = document.getElementById("calibration-save");
     const calibrationCancelEl = document.getElementById("calibration-cancel");
 
-    let calibrationScale = 1.0;
-    const storedScale = localStorage.getItem("arRulerCalibrationScale");
-    if (storedScale) {
-      const parsed = parseFloat(storedScale);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        calibrationScale = parsed;
-        statusLabelEl.textContent = "Calibration loaded – tap to measure.";
-      }
-    }
+    const modeBadgeEl = document.getElementById("mode-badge");
+    const chipTextEl = document.getElementById("chip-text");
+    const brandSubtitleEl = document.getElementById("brand-subtitle");
+
+    const imageInputEl = document.getElementById("image-input");
+    const imageContainerEl = document.getElementById("image-container");
+    const measureImageEl = document.getElementById("measure-image");
 
     // --------- HELPERS: DEVICE / FEATURE DETECTION ----------
 
@@ -542,11 +605,8 @@
       const xrSupported = await supportsWebXRImmersiveAR();
 
       if (!xrSupported) {
-        // iOS Safari / any browser without WebXR
-        isFallbackMode = true;
         initFallbackMode();
       } else {
-        // Full WebXR AR mode
         initXR();
         animate();
       }
@@ -557,6 +617,8 @@
     // =======================
 
     function initXR() {
+      currentMode = "xr";
+
       const canvas = document.getElementById("xr-canvas");
 
       renderer = new THREE.WebGLRenderer({
@@ -609,25 +671,23 @@
       arButton.id = "ar-start-button";
       document.body.appendChild(arButton);
 
+      // Load XR calibration scale if saved
+      const storedScaleXR = localStorage.getItem("arRulerCalibrationScaleXR");
+      if (storedScaleXR) {
+        const parsed = parseFloat(storedScaleXR);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          calibrationScale = parsed;
+          statusLabelEl.textContent = "XR calibration loaded – tap to measure.";
+        }
+      }
+
       // Events
       window.addEventListener("resize", onWindowResize, false);
 
-      unitSelectEl.addEventListener("change", () => {
-        updateDistanceLabel();
-      });
-
-      clearBtnEl.addEventListener("click", () => {
-        clearPointsXR();
-      });
-
-      calibrateBtnEl.addEventListener("click", () => {
-        startCalibrationXR();
-      });
-
-      calibrationSaveEl.addEventListener("click", () => {
-        saveCalibrationFromModal();
-      });
-
+      unitSelectEl.addEventListener("change", updateDistanceLabel);
+      clearBtnEl.addEventListener("click", clearPointsXR);
+      calibrateBtnEl.addEventListener("click", startCalibrationXR);
+      calibrationSaveEl.addEventListener("click", saveCalibrationFromModal);
       calibrationCancelEl.addEventListener("click", () => {
         isCalibrating = false;
         hideCalibrationModal();
@@ -636,6 +696,8 @@
 
       statusLabelEl.textContent =
         "Move your device until the ring locks on a surface, then tap to place points.";
+      modeBadgeEl.textContent = "AR MODE · WEBXR";
+      chipTextEl.textContent = "Ready for surfaces · Move until the ring locks on";
     }
 
     function onWindowResize() {
@@ -666,14 +728,14 @@
       if (points.length === 2) {
         const p1 = points[0].position;
         const p2 = points[1].position;
-        const rawDistance = p1.distanceTo(p2); // meters
+        const rawDistanceMeters = p1.distanceTo(p2); // meters in XR
 
         if (isCalibrating) {
-          rawCalibrationDistanceMeters = rawDistance;
+          rawCalibrationDistance = rawDistanceMeters;
           showCalibrationModal();
           statusLabelEl.textContent = "Enter the real-world distance for calibration.";
         } else {
-          lastDistanceMeters = rawDistance * calibrationScale;
+          lastDistanceMeters = rawDistanceMeters * calibrationScale;
           updateDistanceLabel();
           statusLabelEl.textContent = "Tap again to measure a new segment.";
         }
@@ -716,11 +778,9 @@
         if (!hitTestSourceRequested) {
           session
             .requestReferenceSpace("viewer")
-            .then((referenceSpaceViewer) => {
-              return session.requestHitTestSource({
-                space: referenceSpaceViewer
-              });
-            })
+            .then((referenceSpaceViewer) =>
+              session.requestHitTestSource({ space: referenceSpaceViewer })
+            )
             .then((source) => {
               hitTestSource = source;
             })
@@ -760,32 +820,49 @@
     }
 
     // =======================
-    //  B) FALLBACK MODE (NO WEBXR – WORKS ON iPHONE)
+    //  B) FALLBACK IMAGE MODE (NO WEBXR – WORKS ON iPHONE)
     // =======================
 
     function initFallbackMode() {
+      currentMode = "fallback";
+      document.body.classList.add("fallback-mode");
+
       const canvas = document.getElementById("xr-canvas");
       if (canvas) {
-        canvas.style.display = "none"; // no AR canvas in fallback
+        canvas.style.display = "none";
       }
 
       const ios = isIOS();
       statusLabelEl.textContent = ios
-        ? "WebXR AR is not supported on iOS Safari. Using screen-based ruler mode."
-        : "WebXR not supported. Using screen-based ruler mode.";
+        ? "iOS Safari does not support WebXR AR. Upload a photo and tap two points on it."
+        : "WebXR not supported. Upload a photo and tap two points on it.";
 
-      // Update helper text
       const helper = document.querySelector(".helper-text");
       if (helper) {
         helper.innerHTML =
-          'Tip: Tap <strong>two points on the screen</strong>. Distance is estimated from screen size. You can calibrate with a real ruler.';
+          'Tip: Upload a photo that includes a <strong>known length</strong> (e.g. a ruler or A4 paper), then calibrate once. After that, tap any two points on the image to measure.';
       }
 
-      unitSelectEl.addEventListener("change", () => {
-        updateDistanceLabel();
-      });
+      if (modeBadgeEl) modeBadgeEl.textContent = ios ? "IMAGE MODE · iOS" : "IMAGE MODE";
+      if (chipTextEl) chipTextEl.textContent = "Upload a photo · Tap two points to measure";
+      if (brandSubtitleEl) {
+        brandSubtitleEl.innerHTML =
+          'Upload an image, then tap <strong>Point A</strong> and <strong>Point B</strong> on the photo. Distances use your calibration.';
+      }
 
-      // In fallback, we track two taps on the screen (2D distance in CSS pixels)
+      // Load image-mode calibration scale if saved
+      const storedScaleImg = localStorage.getItem("arRulerCalibrationScaleImage");
+      if (storedScaleImg) {
+        const parsed = parseFloat(storedScaleImg);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          calibrationScale = parsed;
+          statusLabelEl.textContent =
+            "Image calibration loaded – upload a photo, then tap two points.";
+        }
+      }
+
+      unitSelectEl.addEventListener("change", updateDistanceLabel);
+
       let fallbackPoints = [];
 
       function resetFallback() {
@@ -794,16 +871,40 @@
         distanceValueEl.textContent = "—";
       }
 
-      function onPointerDown(event) {
+      function handleImageSelect(event) {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+
+        const url = URL.createObjectURL(file);
+        measureImageEl.src = url;
+        imageContainerEl.classList.remove("hidden");
+        resetFallback();
+        statusLabelEl.textContent =
+          "Image loaded. Tap two points on the photo to measure between them.";
+      }
+
+      function onImagePointerDown(event) {
+        // Ignore taps if no image
+        if (!measureImageEl.src) {
+          statusLabelEl.textContent = "Upload a photo first, then tap two points on it.";
+          return;
+        }
+
         // Ignore taps on the modal
         if (!calibrationModalEl.classList.contains("hidden")) return;
 
-        const point = { x: event.clientX, y: event.clientY };
+        const rect = measureImageEl.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+
+        const point = { x, y };
         fallbackPoints.push(point);
 
         if (fallbackPoints.length === 1) {
           statusLabelEl.textContent =
-            "Tap a second point to complete the measurement.";
+            "Tap a second point on the image to complete the measurement.";
         }
 
         if (fallbackPoints.length === 2) {
@@ -812,56 +913,52 @@
           const dy = p2.y - p1.y;
           const distPx = Math.sqrt(dx * dx + dy * dy);
 
-          // Convert CSS pixels → inches → meters
-          // Spec: 96 CSS px = 1 inch (approx on most devices)
-          const inches = distPx / 96;
-          const meters = inches * 0.0254;
+          // In image mode, raw unit = pixels. Calibration scale maps pixels → meters.
+          const rawDistance = distPx;
 
           if (isCalibrating) {
-            rawCalibrationDistanceMeters = meters;
+            rawCalibrationDistance = rawDistance;
             showCalibrationModal();
             statusLabelEl.textContent =
-              "Enter the real-world distance for calibration.";
+              "Enter the real-world distance for those two points.";
           } else {
-            lastDistanceMeters = meters * calibrationScale;
+            lastDistanceMeters = rawDistance * calibrationScale;
             updateDistanceLabel();
-            statusLabelEl.textContent = "Tap again to measure a new segment.";
+            statusLabelEl.textContent =
+              "Tap again on the image to measure a new segment.";
           }
 
-          // Ready for next measurement
           fallbackPoints = [];
         }
       }
 
-      window.addEventListener("pointerdown", onPointerDown);
+      imageInputEl.addEventListener("change", handleImageSelect);
+      measureImageEl.addEventListener("pointerdown", onImagePointerDown);
 
       clearBtnEl.addEventListener("click", () => {
         resetFallback();
         statusLabelEl.textContent =
-          "Points cleared. Tap twice on the screen to measure.";
+          "Points cleared. Tap two points on the image to measure.";
       });
 
       calibrateBtnEl.addEventListener("click", () => {
         isCalibrating = true;
         fallbackPoints = [];
         statusLabelEl.textContent =
-          "Calibration: tap two points spanning a known distance on your screen (use a real ruler).";
+          "Calibration: tap two points on something in the image with a known length (e.g. 10 cm on a ruler).";
       });
 
-      calibrationSaveEl.addEventListener("click", () => {
-        saveCalibrationFromModal();
-      });
-
+      calibrationSaveEl.addEventListener("click", saveCalibrationFromModal);
       calibrationCancelEl.addEventListener("click", () => {
         isCalibrating = false;
         hideCalibrationModal();
         statusLabelEl.textContent =
-          "Calibration cancelled. Tap twice on the screen to measure.";
+          "Calibration cancelled. Tap two points on the image to measure.";
       });
     }
 
     // =======================
-    //  SHARED UTILITIES (both modes)
+    //  SHARED UTILITIES
     // =======================
 
     function showCalibrationModal() {
@@ -915,7 +1012,7 @@
       if (
         Number.isNaN(inputVal) ||
         inputVal <= 0 ||
-        rawCalibrationDistanceMeters <= 0
+        rawCalibrationDistance <= 0
       ) {
         statusLabelEl.textContent =
           "Calibration failed: please enter a positive distance.";
@@ -925,19 +1022,26 @@
       }
 
       const actualMeters = convertUnitToMeters(inputVal, unit);
-      calibrationScale = actualMeters / rawCalibrationDistanceMeters;
+      calibrationScale = actualMeters / rawCalibrationDistance;
 
       if (!Number.isFinite(calibrationScale) || calibrationScale <= 0) {
         calibrationScale = 1.0;
         statusLabelEl.textContent =
           "Calibration failed: using default scale. Try again.";
       } else {
-        localStorage.setItem(
-          "arRulerCalibrationScale",
-          calibrationScale.toString()
-        );
+        if (currentMode === "xr") {
+          localStorage.setItem(
+            "arRulerCalibrationScaleXR",
+            calibrationScale.toString()
+          );
+        } else if (currentMode === "fallback") {
+          localStorage.setItem(
+            "arRulerCalibrationScaleImage",
+            calibrationScale.toString()
+          );
+        }
         statusLabelEl.textContent =
-          "Calibration saved. All measurements now use your device profile.";
+          "Calibration saved. All measurements now use your profile.";
       }
 
       isCalibrating = false;
