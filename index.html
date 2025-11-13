@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Universal AR Ruler</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at top left, #1d9bf0, #111827 55%, #0b1120);
+      --glass-bg: rgba(15, 23, 42, 0.75);
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.2);
+      --danger: #f97373;
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --border-soft: rgba(148, 163, 184, 0.35);
+      --radius-xl: 18px;
+      --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.95);
+      --blur-strong: blur(20px);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      background: #020617;
+      color: var(--text-main);
+      overflow: hidden;
+    }
+
+    /* Fullscreen canvas for AR */
+    #xr-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      touch-action: none;
+    }
+
+    /* UI Overlay */
+    .ui-overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: env(safe-area-inset-top, 16px) 16px env(safe-area-inset-bottom, 24px) 16px;
+      z-index: 10;
+      background-image: var(--bg-gradient);
+      mix-blend-mode: soft-light;
+    }
+
+    .ui-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      pointer-events: auto;
+    }
+
+    .brand-card {
+      background: var(--glass-bg);
+      border-radius: 24px;
+      border: 1px solid var(--border-soft);
+      padding: 12px 16px;
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: var(--blur-strong);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 70%;
+    }
+
+    .brand-title {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-pill {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 30%, #a5f3fc, #38bdf8);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.8);
+    }
+
+    .brand-subtitle {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.3;
+    }
+
+    .pill-badge {
+      align-self: flex-start;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.3);
+      color: #99f6e4;
+      border: 1px solid rgba(45, 212, 191, 0.5);
+    }
+
+    .floating-chip {
+      background: var(--glass-bg);
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(18px);
+    }
+
+    .floating-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
+    }
+
+    .ui-bottom {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    .control-panel {
+      background: var(--glass-bg);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-soft);
+      padding: 12px 12px 10px;
+      backdrop-filter: var(--blur-strong);
+      box-shadow: var(--shadow-soft);
+      display: grid;
+      grid-template-columns: 1.2fr 1.2fr;
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "distance distance"
+        "units actions";
+      gap: 8px 10px;
+    }
+
+    .distance-display {
+      grid-area: distance;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .distance-main {
+      font-size: 1.6rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .distance-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--text-muted);
+    }
+
+    .status-text {
+      font-size: 0.74rem;
+      color: var(--text-muted);
+    }
+
+    .unit-select-group {
+      grid-area: units;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .unit-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+    }
+
+    select, input[type="number"] {
+      width: 100%;
+      padding: 6px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      outline: none;
+      appearance: none;
+    }
+
+    .actions-group {
+      grid-area: actions;
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .btn {
+      border-radius: 999px;
+      border: 1px solid transparent;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+      background: rgba(15, 23, 42, 0.95);
+      color: var(--text-main);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #22d3ee, #1d4ed8);
+      border-color: rgba(56, 189, 248, 0.6);
+      box-shadow: 0 10px 25px rgba(56, 189, 248, 0.4);
+    }
+
+    .btn-ghost {
+      border-color: rgba(148, 163, 184, 0.55);
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .btn-danger {
+      border-color: rgba(248, 113, 113, 0.6);
+      color: #fecaca;
+      background: rgba(127, 29, 29, 0.7);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.9);
+    }
+
+    .btn span.icon {
+      display: inline-block;
+      font-size: 0.9rem;
+    }
+
+    .helper-text {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 0 8px;
+    }
+
+    .helper-text strong {
+      color: #bae6fd;
+    }
+
+    /* WebXR AR button style (Three.js ARButton) */
+    #ar-start-button {
+      position: fixed;
+      left: 50%;
+      bottom: env(safe-area-inset-bottom, 18px);
+      transform: translateX(-50%);
+      z-index: 20;
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(56, 189, 248, 0.7);
+      background: radial-gradient(circle at top left, #38bdf8, #1d4ed8);
+      color: #f9fafb;
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.9);
+      cursor: pointer;
+      backdrop-filter: blur(18px);
+    }
+
+    #ar-start-button.hidden {
+      display: none !important;
+    }
+
+    /* Calibration modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(20px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+    }
+
+    .modal {
+      background: radial-gradient(circle at top left, #0ea5e9, #020617);
+      border-radius: 22px;
+      border: 1px solid rgba(148, 163, 184, 0.7);
+      box-shadow: 0 26px 60px rgba(15, 23, 42, 1);
+      padding: 18px 16px 14px;
+      width: min(380px, 92vw);
+      color: var(--text-main);
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .modal-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .modal-tag {
+      font-size: 0.68rem;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.8);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #e5e7eb;
+    }
+
+    .modal-body {
+      font-size: 0.8rem;
+      color: #e5e7eb;
+      margin-bottom: 10px;
+    }
+
+    .modal-body p + p {
+      margin-top: 4px;
+    }
+
+    .modal-row {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 8px;
+      margin: 8px 0 10px;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (min-width: 768px) {
+      .control-panel {
+        max-width: 480px;
+        margin: 0 auto;
+      }
+
+      .brand-card {
+        max-width: 320px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="xr-canvas"></canvas>
+
+  <!-- UI Overlay -->
+  <div class="ui-overlay">
+    <div class="ui-top">
+      <div class="brand-card">
+        <div class="brand-title">
+          <span class="brand-pill"></span>
+          Universal AR Ruler
+        </div>
+        <div class="brand-subtitle">
+          Tap once to drop <strong>Point A</strong>, again for <strong>Point B</strong>.
+          Move your device to explore – distance updates in real-time.
+        </div>
+        <span class="pill-badge">Single Calibration · Multi-Unit</span>
+      </div>
+
+      <div class="floating-chip">
+        <span class="floating-dot"></span>
+        <span>Ready for surfaces · Move until the ring locks on</span>
+      </div>
+    </div>
+
+    <div class="ui-bottom">
+      <div class="control-panel">
+        <div class="distance-display">
+          <div>
+            <div class="distance-main" id="distance-value">—</div>
+            <div class="distance-label">Active measurement</div>
+          </div>
+          <div class="status-text" id="status-label">
+            Aim at a flat surface and wait for the ring to appear.
+          </div>
+        </div>
+
+        <div class="unit-select-group">
+          <label class="unit-label" for="unit-select">Units</label>
+          <select id="unit-select">
+            <option value="cm">Centimetres (cm)</option>
+            <option value="mm">Millimetres (mm)</option>
+            <option value="m">Metres (m)</option>
+            <option value="in">Inches (in)</option>
+            <option value="ft">Feet (ft)</option>
+          </select>
+        </div>
+
+        <div class="actions-group">
+          <button class="btn btn-ghost" id="calibrate-btn">
+            <span class="icon">⚙️</span><span>Calibrate</span>
+          </button>
+          <button class="btn btn-danger" id="clear-btn">
+            <span class="icon">✖</span><span>Clear</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="helper-text">
+        Tip: For best accuracy, calibrate once using an object with a known length
+        (e.g. <strong>A4 paper = 29.7 cm</strong> or a tape measure).
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibration Modal -->
+  <div id="calibration-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Calibration</div>
+        <div class="modal-tag">One-time setup</div>
+      </div>
+      <div class="modal-body">
+        <p>
+          You’ve just measured a calibration distance between two points in AR.
+        </p>
+        <p>
+          Enter the <strong>real-world distance</strong> between those two points. We’ll
+          adjust all future measurements to match your device and environment.
+        </p>
+      </div>
+      <div class="modal-row">
+        <input type="number" id="calibration-input" min="0" step="0.01" placeholder="Known distance" />
+        <select id="calibration-unit">
+          <option value="cm">cm</option>
+          <option value="mm">mm</option>
+          <option value="m">m</option>
+          <option value="in">in</option>
+          <option value="ft">ft</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="calibration-cancel">Cancel</button>
+        <button class="btn btn-primary" id="calibration-save">
+          <span class="icon">✅</span><span>Save calibration</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Three.js + WebXR -->
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+    import { ARButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js";
+
+    let camera, scene, renderer;
+    let reticle;
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+    let controller;
+
+    const points = [];
+    let lastDistanceMeters = 0;
+
+    let isCalibrating = false;
+    let rawCalibrationDistanceMeters = 0;
+
+    const distanceValueEl = document.getElementById("distance-value");
+    const statusLabelEl = document.getElementById("status-label");
+    const unitSelectEl = document.getElementById("unit-select");
+    const clearBtnEl = document.getElementById("clear-btn");
+    const calibrateBtnEl = document.getElementById("calibrate-btn");
+
+    const calibrationModalEl = document.getElementById("calibration-modal");
+    const calibrationInputEl = document.getElementById("calibration-input");
+    const calibrationUnitEl = document.getElementById("calibration-unit");
+    const calibrationSaveEl = document.getElementById("calibration-save");
+    const calibrationCancelEl = document.getElementById("calibration-cancel");
+
+    let calibrationScale = 1.0;
+    const storedScale = localStorage.getItem("arRulerCalibrationScale");
+    if (storedScale) {
+      const parsed = parseFloat(storedScale);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        calibrationScale = parsed;
+        statusLabelEl.textContent = "Calibration loaded – tap to measure.";
+      }
+    }
+
+    init();
+    animate();
+
+    function init() {
+      const canvas = document.getElementById("xr-canvas");
+
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: true
+      });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+
+      scene = new THREE.Scene();
+
+      camera = new THREE.PerspectiveCamera(
+        70,
+        window.innerWidth / window.innerHeight,
+        0.01,
+        20
+      );
+      scene.add(camera);
+
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.0);
+      scene.add(light);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.4);
+      dirLight.position.set(0.5, 1, 0.5);
+      scene.add(dirLight);
+
+      // Reticle
+      const geometry = new THREE.RingGeometry(0.05, 0.07, 32);
+      geometry.rotateX(-Math.PI / 2);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide
+      });
+      reticle = new THREE.Mesh(geometry, material);
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
+
+      // Controller (tap handler)
+      controller = renderer.xr.getController(0);
+      controller.addEventListener("select", onSelect);
+      scene.add(controller);
+
+      // AR button
+      const arButton = ARButton.createButton(renderer, {
+        requiredFeatures: ["hit-test"]
+      });
+      arButton.id = "ar-start-button";
+      document.body.appendChild(arButton);
+
+      // Events
+      window.addEventListener("resize", onWindowResize, false);
+
+      unitSelectEl.addEventListener("change", () => {
+        updateDistanceLabel();
+      });
+
+      clearBtnEl.addEventListener("click", () => {
+        clearPoints();
+      });
+
+      calibrateBtnEl.addEventListener("click", () => {
+        startCalibration();
+      });
+
+      calibrationSaveEl.addEventListener("click", () => {
+        saveCalibrationFromModal();
+      });
+
+      calibrationCancelEl.addEventListener("click", () => {
+        isCalibrating = false;
+        hideCalibrationModal();
+        statusLabelEl.textContent = "Calibration cancelled. Tap to measure normally.";
+      });
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onSelect() {
+      if (!reticle.visible) {
+        statusLabelEl.textContent = "Point at a surface until the ring appears.";
+        return;
+      }
+
+      const markerGeometry = new THREE.SphereGeometry(0.01, 16, 16);
+      const markerMaterial = new THREE.MeshStandardMaterial({ color: 0x22d3ee });
+      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+
+      marker.position.setFromMatrixPosition(reticle.matrix);
+      scene.add(marker);
+      points.push(marker);
+
+      if (points.length === 1) {
+        statusLabelEl.textContent = "Point B: tap again to drop the second point.";
+      }
+
+      if (points.length === 2) {
+        const p1 = points[0].position;
+        const p2 = points[1].position;
+        const rawDistance = p1.distanceTo(p2); // in meters (WebXR world)
+
+        if (isCalibrating) {
+          rawCalibrationDistanceMeters = rawDistance;
+          showCalibrationModal();
+          statusLabelEl.textContent = "Enter the real-world distance for calibration.";
+        } else {
+          lastDistanceMeters = rawDistance * calibrationScale;
+          updateDistanceLabel();
+          statusLabelEl.textContent = "Tap again to measure a new segment.";
+        }
+      }
+
+      // Keep only the last two markers
+      if (points.length > 2) {
+        const old = points.shift();
+        scene.remove(old);
+      }
+    }
+
+    function clearPoints() {
+      while (points.length > 0) {
+        const p = points.pop();
+        scene.remove(p);
+      }
+      lastDistanceMeters = 0;
+      distanceValueEl.textContent = "—";
+      statusLabelEl.textContent = "Points cleared. Tap to drop a new pair.";
+    }
+
+    function startCalibration() {
+      clearPoints();
+      isCalibrating = true;
+      statusLabelEl.textContent =
+        "Calibration mode: drop two points on a known distance (e.g. along a ruler).";
+    }
+
+    function showCalibrationModal() {
+      calibrationModalEl.classList.remove("hidden");
+      calibrationInputEl.value = "";
+      calibrationInputEl.focus();
+    }
+
+    function hideCalibrationModal() {
+      calibrationModalEl.classList.add("hidden");
+    }
+
+    function convertMetersToUnit(meters, unit) {
+      switch (unit) {
+        case "mm":
+          return meters * 1000;
+        case "cm":
+          return meters * 100;
+        case "m":
+          return meters;
+        case "in":
+          return meters * 39.3700787;
+        case "ft":
+          return meters * 3.2808399;
+        default:
+          return meters;
+      }
+    }
+
+    function convertUnitToMeters(value, unit) {
+      switch (unit) {
+        case "mm":
+          return value / 1000;
+        case "cm":
+          return value / 100;
+        case "m":
+          return value;
+        case "in":
+          return value / 39.3700787;
+        case "ft":
+          return value / 3.2808399;
+        default:
+          return value;
+      }
+    }
+
+    function saveCalibrationFromModal() {
+      const inputVal = parseFloat(calibrationInputEl.value);
+      const unit = calibrationUnitEl.value;
+
+      if (
+        Number.isNaN(inputVal) ||
+        inputVal <= 0 ||
+        rawCalibrationDistanceMeters <= 0
+      ) {
+        statusLabelEl.textContent =
+          "Calibration failed: please enter a positive distance.";
+        hideCalibrationModal();
+        isCalibrating = false;
+        return;
+      }
+
+      const actualMeters = convertUnitToMeters(inputVal, unit);
+      calibrationScale = actualMeters / rawCalibrationDistanceMeters;
+
+      if (!Number.isFinite(calibrationScale) || calibrationScale <= 0) {
+        calibrationScale = 1.0;
+        statusLabelEl.textContent =
+          "Calibration failed: using default scale. Try again.";
+      } else {
+        localStorage.setItem(
+          "arRulerCalibrationScale",
+          calibrationScale.toString()
+        );
+        statusLabelEl.textContent =
+          "Calibration saved. All measurements now use your device profile.";
+      }
+
+      // End calibration mode and clear markers
+      isCalibrating = false;
+      hideCalibrationModal();
+      clearPoints();
+    }
+
+    function updateDistanceLabel() {
+      if (!lastDistanceMeters || lastDistanceMeters <= 0) {
+        distanceValueEl.textContent = "—";
+        return;
+      }
+
+      const unit = unitSelectEl.value;
+      const value = convertMetersToUnit(lastDistanceMeters, unit);
+
+      let precision;
+      if (unit === "mm") precision = 0;
+      else if (unit === "cm" || unit === "in") precision = 2;
+      else precision = 3;
+
+      distanceValueEl.textContent = `${value.toFixed(precision)} ${unit}`;
+    }
+
+    function animate() {
+      renderer.setAnimationLoop(render);
+    }
+
+    function render(timestamp, frame) {
+      const session = renderer.xr.getSession();
+
+      if (frame && session) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+
+        if (!hitTestSourceRequested) {
+          session
+            .requestReferenceSpace("viewer")
+            .then((referenceSpaceViewer) => {
+              return session.requestHitTestSource({
+                space: referenceSpaceViewer
+              });
+            })
+            .then((source) => {
+              hitTestSource = source;
+            })
+            .catch((err) => {
+              console.warn("Hit test not available:", err);
+              statusLabelEl.textContent =
+                "Hit-test not supported on this device/browser.";
+            });
+
+          session.addEventListener("end", () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+          });
+
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          const hitTestResults = frame.getHitTestResults(hitTestSource);
+          if (hitTestResults.length) {
+            const hit = hitTestResults[0];
+            const pose = hit.getPose(referenceSpace);
+
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+
+            if (points.length === 0) {
+              statusLabelEl.textContent =
+                "Point A: tap to place the first point.";
+            }
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
