@@ -455,7 +455,7 @@
       </div>
       <div class="modal-body">
         <p>
-          You’ve just measured a calibration distance between two points in AR.
+          You’ve just measured a calibration distance between two points in AR or on screen.
         </p>
         <p>
           Enter the <strong>real-world distance</strong> between those two points. We’ll
@@ -481,7 +481,7 @@
     </div>
   </div>
 
-  <!-- Three.js + WebXR -->
+  <!-- Three.js + WebXR + iOS fallback -->
   <script type="module">
     import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
     import { ARButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js";
@@ -497,6 +497,7 @@
 
     let isCalibrating = false;
     let rawCalibrationDistanceMeters = 0;
+    let isFallbackMode = false; // true on iOS / no WebXR
 
     const distanceValueEl = document.getElementById("distance-value");
     const statusLabelEl = document.getElementById("status-label");
@@ -520,10 +521,42 @@
       }
     }
 
-    init();
-    animate();
+    // --------- HELPERS: DEVICE / FEATURE DETECTION ----------
 
-    function init() {
+    function isIOS() {
+      return /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+    }
+
+    async function supportsWebXRImmersiveAR() {
+      if (!navigator.xr || !navigator.xr.isSessionSupported) return false;
+      try {
+        return await navigator.xr.isSessionSupported("immersive-ar");
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // --------- START APP: CHOOSE AR OR FALLBACK ----------
+
+    async function startApp() {
+      const xrSupported = await supportsWebXRImmersiveAR();
+
+      if (!xrSupported) {
+        // iOS Safari / any browser without WebXR
+        isFallbackMode = true;
+        initFallbackMode();
+      } else {
+        // Full WebXR AR mode
+        initXR();
+        animate();
+      }
+    }
+
+    // =======================
+    //  A) WEBXR AR MODE
+    // =======================
+
+    function initXR() {
       const canvas = document.getElementById("xr-canvas");
 
       renderer = new THREE.WebGLRenderer({
@@ -566,7 +599,7 @@
 
       // Controller (tap handler)
       controller = renderer.xr.getController(0);
-      controller.addEventListener("select", onSelect);
+      controller.addEventListener("select", onSelectXR);
       scene.add(controller);
 
       // AR button
@@ -584,11 +617,11 @@
       });
 
       clearBtnEl.addEventListener("click", () => {
-        clearPoints();
+        clearPointsXR();
       });
 
       calibrateBtnEl.addEventListener("click", () => {
-        startCalibration();
+        startCalibrationXR();
       });
 
       calibrationSaveEl.addEventListener("click", () => {
@@ -600,15 +633,19 @@
         hideCalibrationModal();
         statusLabelEl.textContent = "Calibration cancelled. Tap to measure normally.";
       });
+
+      statusLabelEl.textContent =
+        "Move your device until the ring locks on a surface, then tap to place points.";
     }
 
     function onWindowResize() {
+      if (!renderer || !camera) return;
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    function onSelect() {
+    function onSelectXR() {
       if (!reticle.visible) {
         statusLabelEl.textContent = "Point at a surface until the ring appears.";
         return;
@@ -629,7 +666,7 @@
       if (points.length === 2) {
         const p1 = points[0].position;
         const p2 = points[1].position;
-        const rawDistance = p1.distanceTo(p2); // in meters (WebXR world)
+        const rawDistance = p1.distanceTo(p2); // meters
 
         if (isCalibrating) {
           rawCalibrationDistanceMeters = rawDistance;
@@ -649,7 +686,7 @@
       }
     }
 
-    function clearPoints() {
+    function clearPointsXR() {
       while (points.length > 0) {
         const p = points.pop();
         scene.remove(p);
@@ -659,12 +696,173 @@
       statusLabelEl.textContent = "Points cleared. Tap to drop a new pair.";
     }
 
-    function startCalibration() {
-      clearPoints();
+    function startCalibrationXR() {
+      clearPointsXR();
       isCalibrating = true;
       statusLabelEl.textContent =
-        "Calibration mode: drop two points on a known distance (e.g. along a ruler).";
+        "Calibration: place two points across a known distance (e.g. along a ruler).";
     }
+
+    function animate() {
+      renderer.setAnimationLoop(render);
+    }
+
+    function render(timestamp, frame) {
+      const session = renderer.xr.getSession();
+
+      if (frame && session) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+
+        if (!hitTestSourceRequested) {
+          session
+            .requestReferenceSpace("viewer")
+            .then((referenceSpaceViewer) => {
+              return session.requestHitTestSource({
+                space: referenceSpaceViewer
+              });
+            })
+            .then((source) => {
+              hitTestSource = source;
+            })
+            .catch((err) => {
+              console.warn("Hit test not available:", err);
+              statusLabelEl.textContent =
+                "Hit-test not supported on this device/browser.";
+            });
+
+          session.addEventListener("end", () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+          });
+
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          const hitTestResults = frame.getHitTestResults(hitTestSource);
+          if (hitTestResults.length) {
+            const hit = hitTestResults[0];
+            const pose = hit.getPose(referenceSpace);
+
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+
+            if (points.length === 0) {
+              statusLabelEl.textContent = "Point A: tap to place the first point.";
+            }
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // =======================
+    //  B) FALLBACK MODE (NO WEBXR – WORKS ON iPHONE)
+    // =======================
+
+    function initFallbackMode() {
+      const canvas = document.getElementById("xr-canvas");
+      if (canvas) {
+        canvas.style.display = "none"; // no AR canvas in fallback
+      }
+
+      const ios = isIOS();
+      statusLabelEl.textContent = ios
+        ? "WebXR AR is not supported on iOS Safari. Using screen-based ruler mode."
+        : "WebXR not supported. Using screen-based ruler mode.";
+
+      // Update helper text
+      const helper = document.querySelector(".helper-text");
+      if (helper) {
+        helper.innerHTML =
+          'Tip: Tap <strong>two points on the screen</strong>. Distance is estimated from screen size. You can calibrate with a real ruler.';
+      }
+
+      unitSelectEl.addEventListener("change", () => {
+        updateDistanceLabel();
+      });
+
+      // In fallback, we track two taps on the screen (2D distance in CSS pixels)
+      let fallbackPoints = [];
+
+      function resetFallback() {
+        fallbackPoints = [];
+        lastDistanceMeters = 0;
+        distanceValueEl.textContent = "—";
+      }
+
+      function onPointerDown(event) {
+        // Ignore taps on the modal
+        if (!calibrationModalEl.classList.contains("hidden")) return;
+
+        const point = { x: event.clientX, y: event.clientY };
+        fallbackPoints.push(point);
+
+        if (fallbackPoints.length === 1) {
+          statusLabelEl.textContent =
+            "Tap a second point to complete the measurement.";
+        }
+
+        if (fallbackPoints.length === 2) {
+          const [p1, p2] = fallbackPoints;
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const distPx = Math.sqrt(dx * dx + dy * dy);
+
+          // Convert CSS pixels → inches → meters
+          // Spec: 96 CSS px = 1 inch (approx on most devices)
+          const inches = distPx / 96;
+          const meters = inches * 0.0254;
+
+          if (isCalibrating) {
+            rawCalibrationDistanceMeters = meters;
+            showCalibrationModal();
+            statusLabelEl.textContent =
+              "Enter the real-world distance for calibration.";
+          } else {
+            lastDistanceMeters = meters * calibrationScale;
+            updateDistanceLabel();
+            statusLabelEl.textContent = "Tap again to measure a new segment.";
+          }
+
+          // Ready for next measurement
+          fallbackPoints = [];
+        }
+      }
+
+      window.addEventListener("pointerdown", onPointerDown);
+
+      clearBtnEl.addEventListener("click", () => {
+        resetFallback();
+        statusLabelEl.textContent =
+          "Points cleared. Tap twice on the screen to measure.";
+      });
+
+      calibrateBtnEl.addEventListener("click", () => {
+        isCalibrating = true;
+        fallbackPoints = [];
+        statusLabelEl.textContent =
+          "Calibration: tap two points spanning a known distance on your screen (use a real ruler).";
+      });
+
+      calibrationSaveEl.addEventListener("click", () => {
+        saveCalibrationFromModal();
+      });
+
+      calibrationCancelEl.addEventListener("click", () => {
+        isCalibrating = false;
+        hideCalibrationModal();
+        statusLabelEl.textContent =
+          "Calibration cancelled. Tap twice on the screen to measure.";
+      });
+    }
+
+    // =======================
+    //  SHARED UTILITIES (both modes)
+    // =======================
 
     function showCalibrationModal() {
       calibrationModalEl.classList.remove("hidden");
@@ -742,10 +940,10 @@
           "Calibration saved. All measurements now use your device profile.";
       }
 
-      // End calibration mode and clear markers
       isCalibrating = false;
       hideCalibrationModal();
-      clearPoints();
+      lastDistanceMeters = 0;
+      distanceValueEl.textContent = "—";
     }
 
     function updateDistanceLabel() {
@@ -765,62 +963,8 @@
       distanceValueEl.textContent = `${value.toFixed(precision)} ${unit}`;
     }
 
-    function animate() {
-      renderer.setAnimationLoop(render);
-    }
-
-    function render(timestamp, frame) {
-      const session = renderer.xr.getSession();
-
-      if (frame && session) {
-        const referenceSpace = renderer.xr.getReferenceSpace();
-
-        if (!hitTestSourceRequested) {
-          session
-            .requestReferenceSpace("viewer")
-            .then((referenceSpaceViewer) => {
-              return session.requestHitTestSource({
-                space: referenceSpaceViewer
-              });
-            })
-            .then((source) => {
-              hitTestSource = source;
-            })
-            .catch((err) => {
-              console.warn("Hit test not available:", err);
-              statusLabelEl.textContent =
-                "Hit-test not supported on this device/browser.";
-            });
-
-          session.addEventListener("end", () => {
-            hitTestSourceRequested = false;
-            hitTestSource = null;
-          });
-
-          hitTestSourceRequested = true;
-        }
-
-        if (hitTestSource) {
-          const hitTestResults = frame.getHitTestResults(hitTestSource);
-          if (hitTestResults.length) {
-            const hit = hitTestResults[0];
-            const pose = hit.getPose(referenceSpace);
-
-            reticle.visible = true;
-            reticle.matrix.fromArray(pose.transform.matrix);
-
-            if (points.length === 0) {
-              statusLabelEl.textContent =
-                "Point A: tap to place the first point.";
-            }
-          } else {
-            reticle.visible = false;
-          }
-        }
-      }
-
-      renderer.render(scene, camera);
-    }
+    // Start the app (decide XR vs fallback)
+    startApp();
   </script>
 </body>
 </html>
